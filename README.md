@@ -17,6 +17,17 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 GET /scrape-item?itemCd=3353216&compCd=C
 ```
 
+## ChromeDriver 이슈 해결
+
+`webdriver-manager`가 루트 영역인 `/.wdm` 경로에 캐시를 만들려다 권한 문제로 실패할 수 있습니다. 이 프로젝트는 컨테이너에 설치된 시스템 Chrome/ChromeDriver를 직접 사용하도록 변경되어 있습니다.
+
+Docker 환경에서는 아래 환경 변수를 그대로 사용합니다.
+
+```bash
+CHROME_BIN=/usr/bin/chromium
+CHROMEDRIVER_BIN=/usr/bin/chromedriver
+```
+
 ## Cloudtype 배포
 
 1. GitHub 저장소를 Cloudtype에 연결합니다.
