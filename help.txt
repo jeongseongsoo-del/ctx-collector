@@ -1,134 +1,249 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-from bs4 import BeautifulSoup
-import re
-import logging
-import json
+from fastapi import FastAPI, Query, HTTPException
+import httpx
+import time
 
-# 크롬 옵션 설정
-options = Options()
-options.add_argument("--headless=new")
-options.add_argument("--disable-gpu")
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-dev-shm-usage")
-options.add_argument("--blink-settings=imagesEnabled=false")
-options.add_argument("--window-size=1920,1080")
+app = FastAPI(
+    title="CTX Product API",
+    version="1.0.0"
+)
 
-# WebDriver 설정
-service = Service(ChromeDriverManager().install())
-driver = webdriver.Chrome(service=service, options=options)
+CTX_EBOOK_URL = (
+    "https://ctx.cretec.kr/CtxApp/ebook/"
+    "selectEbookUninumSearch.do"
+)
 
-#----------------------- 설정 -----------------------
-MONGO_URI = "mongodb://root:jss4526!@svr.n-e.kr:27017/admin"
-collection_name = "2262"  # ✅✅✅<- 여기만 변경하면 자동 반영됨✅✅✅
-LIMIT_COUNT = 1  # ✅✅✅테스트 시 1, 실운영 시 None 또는 큰 값✅✅✅
-
-# ----------------------- 로깅 설정 -----------------------
-LOG_FILENAME = f"log_{collection_name}.txt"
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-# 사양 테이블 파싱
-def parse_spec_from_html(html: str) -> dict:
-    soup = BeautifulSoup(html, 'html.parser')
-    result = {}
-
-    for row in soup.find_all("tr"):
-        tds = row.find_all("td")
-        if len(tds) >= 2:
-            key = re.sub(r'\s+', '', tds[0].get_text())
-            value = ""
-            buttons = tds[1].find_all("button")
-            if buttons:
-                for btn in buttons:
-                    if btn.get("data-active") == "Y":
-                        value = re.sub(r'\s+', '', btn.get_text())
-                        break
-            else:
-                value = re.sub(r'\s+', '', tds[1].get_text())
-            result[key] = value
-    return result
-
-# 배송 정보 파싱
-def parse_table_trs(html: str) -> dict:
-    soup = BeautifulSoup(html, 'html.parser')
-    result = {}
-
-    for row in soup.find_all('tr'):
-        tds = row.find_all('td')
-        if len(tds) >= 2:
-            key = re.sub(r'\s+', '', tds[0].get_text())
-            value_text = re.sub(r'\s+', '', tds[1].get_text()).replace("￦", "").replace(",", "")
-            try:
-                value = int(value_text)
-            except ValueError:
-                value = value_text
-            result[key] = value
-    return result
-
-# 상세페이지 HTML 정리
-def clean_html_for_detail_page(html: str) -> dict:
-    soup = BeautifulSoup(html, 'html.parser')
-
-    # <style>, <script> 제거
-    for tag in soup(['style', 'script']):
-        tag.decompose()
-
-    # <hr> -> 쿠팡/네이버 호환 div
-    for hr in soup.find_all('hr'):
-        hr.replace_with(soup.new_tag("div", style="border-top:1px solid #ccc;margin:20px 0;"))
-
-    # HTML 문자열로 변환 후 공백 정리
-    cleaned_html = re.sub(r'\s+', ' ', str(soup)).strip()
-
-    return {"detail_html": cleaned_html}
+CTX_POWER_URL = (
+    "https://ctx.cretec.kr/CtxApp/ctx/"
+    "selectPowerSearchJson.do"
+)
 
 
-# 실행
-try:
-    url = "https://ctx.cretec.kr/CtxApp/ctx/selectItemDtlIfrm.do?itemCd=3353216&compCd=C"
-    driver.get(url)
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/151.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Referer": "https://ctx.cretec.kr/"
+}
 
-    # ID 기반 요소 대기
-    WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located((By.ID, "metaInfoTbl"))
-    )
 
-    meta_html = driver.find_element(By.ID, "metaInfoTbl").get_attribute("outerHTML")
+@app.get("/ctx/product")
+async def get_product(
+    prodCd: str = Query(..., description="CTX 상품번호")
+):
 
-    # 배송 테이블 <table> 기준 추출
-    try:
-        deli_table = driver.find_element(By.XPATH, '//*[@id="itemDtlTbl"]/tbody/tr[10]/td/table').get_attribute("outerHTML")
-    except Exception:
-        deli_table = ""  # 예외 시 빈 값 처리
+    timestamp = str(int(time.time() * 1000))
 
-    # 상세 설명
-    try:
-        detail_html = driver.find_element(By.ID, "itemDetailDiv").get_attribute("outerHTML")
-    except Exception:
-        detail_html = ""
+    # -----------------------------------------
+    # 1. Ebook API
+    # -----------------------------------------
 
-    # 파싱 처리
-    spec_table = parse_spec_from_html(meta_html)
-    deli_json = parse_table_trs(deli_table) if deli_table else {}
-    detail_tag = clean_html_for_detail_page(detail_html) if detail_html else {"detail_html": ""}
-
-    # 통합 결과
-    combined_result = {
-        "spec": spec_table,
-        "delivery": deli_json,
-        "detail": detail_tag.get("detail_html", "")
+    ebook_params = {
+        "prodCd": prodCd,
+        "itemCd": "",
+        "_": timestamp
     }
 
-    print(json.dumps(combined_result, ensure_ascii=False, indent=2))
+    # -----------------------------------------
+    # 2. Power Search API
+    # -----------------------------------------
 
-except Exception as e:
-    print("오류 발생:", e)
+    power_params = {
+        "prod_cd": prodCd,
+        "keyword": "",
+        "_": timestamp
+    }
 
-finally:
-    driver.quit()
+    try:
+
+        async with httpx.AsyncClient(
+            timeout=20.0,
+            follow_redirects=True
+        ) as client:
+
+            # 두 API 동시 호출
+            ebook_response, power_response = await __import__(
+                "asyncio"
+            ).gather(
+
+                client.get(
+                    CTX_EBOOK_URL,
+                    params=ebook_params,
+                    headers=HEADERS
+                ),
+
+                client.get(
+                    CTX_POWER_URL,
+                    params=power_params,
+                    headers=HEADERS
+                )
+            )
+
+            ebook_response.raise_for_status()
+            power_response.raise_for_status()
+
+            ebook_data = ebook_response.json()
+            power_data = power_response.json()
+
+        # -----------------------------------------
+        # Ebook 데이터
+        # -----------------------------------------
+
+        ebook_result = ebook_data.get("result", [])
+
+        if not ebook_result:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Ebook 상품을 찾을 수 없습니다: {prodCd}"
+            )
+
+        ebook_item = ebook_result[0]
+
+        ebook_fields = [
+            "procode",
+            "proino",
+            "procpn",
+            "cateNm",
+            "proinm",
+            "prostd",
+            "promod",
+            "pconam",
+            "linkX1",
+            "linkY1",
+            "linkX2",
+            "linkY2",
+            "mastDb",
+            "folder",
+            "pg"
+        ]
+
+        ebook_result_data = {
+            key: ebook_item.get(key)
+            for key in ebook_fields
+        }
+
+        # -----------------------------------------
+        # Power Search 데이터
+        # -----------------------------------------
+
+        power_result = power_data.get("result", {})
+        power_items = power_result.get("items", [])
+
+        if not power_items:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Power 상품을 찾을 수 없습니다: {prodCd}"
+            )
+
+        power_item = power_items[0]
+
+        # qties 분리
+        # 예: "1,0,0,EA,"
+        #     [0] = 1
+        #     [1] = 0
+        #     [2] = 0
+        #     [3] = EA
+        qties = (power_item.get("qties") or "").split(",")
+
+        moq = qties[0] if len(qties) > 0 else ""
+        unit = qties[3] if len(qties) > 3 else ""
+
+
+        power_fields = [
+
+            "qties",
+            "std_sale_pric",
+            "std_unit_pric",
+            "sale_prices",
+            "std_unit_pric_rte",
+
+            "item_stdz",
+            "img_file",
+            "image_name",
+
+            "d1sum",
+            "s1sum",
+            "order_qty",
+
+            "ebook_yn",
+            "item_use_cd",
+
+            "stpay",
+            "recp_expt_dt",
+            "recp_expt_dt_s1",
+
+            "dept_info",
+            "dept_info_s1",
+
+            "ritteryn",
+            "imp_cargo_serv",
+            "cg_psvc_yn",
+            "no_sale_item_yn",
+
+            "modl_no",
+            "yusa",
+            "brnd_cd",
+
+            "rtn_imps_yn",
+            "imp_delv_serv",
+            "imp_delv_serv_all",
+
+            "no_air_trans_yn",
+            "hand_with_care_yn",
+            "delv_pay_item_cls_cd",
+
+            "online_no_sale",
+            "direct_no_sale_yn",
+
+            "chemi_yn",
+            "as_cost_yn",
+            "oil_remove_yn",
+            "indi_cargo_yn",
+            "rcmd_cls"
+        ]
+
+
+        power_result_data = {
+            key: power_item.get(key)
+            for key in power_fields
+        }
+
+
+        # qties에서 추출한 값 추가
+        power_result_data["moq"] = moq
+        power_result_data["unit"] = unit
+
+        # -----------------------------------------
+        # 최종 결과
+        # -----------------------------------------
+
+        return {
+            **ebook_result_data,
+            **power_result_data
+        }
+
+    except httpx.TimeoutException:
+
+        raise HTTPException(
+            status_code=504,
+            detail="CTX 서버 응답 시간 초과"
+        )
+
+    except httpx.HTTPStatusError as e:
+
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"CTX 서버 HTTP 오류: {e.response.status_code}"
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"데이터 수집 오류: {str(e)}"
+        )
