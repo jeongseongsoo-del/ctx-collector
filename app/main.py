@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -48,7 +49,7 @@ def extract_delivery_table_html(page) -> str:
             const tables = [...root.querySelectorAll('table')];
             for (const table of tables) {
                 const text = (table.textContent || '').replace(/\s+/g, ' ').trim();
-                if (/화물업체|택배|배송|운임|금액/.test(text)) {
+                if (/화물업체|택배|배송|운임|금액|대신택배|CJ택배/.test(text)) {
                     return table.outerHTML;
                 }
             }
@@ -56,6 +57,25 @@ def extract_delivery_table_html(page) -> str:
         }
         """
     )
+
+
+def extract_delivery_fallback(page) -> Dict[str, Any]:
+    html = page.content()
+    text = re.sub(r"\s+", " ", html)
+    patterns = [
+        r"화물업체\s*[:：]?\s*([^<]+?)\s*금액\s*[:：]?\s*([0-9,]+)",
+        r"(대신택배|CJ택배|한진택배|롯데택배|로젠택배|우체국택배)\s*[:：]?\s*([0-9,]+)",
+        r"(배송비|운임|택배비)\s*[:：]?\s*([0-9,]+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            carrier = match.group(1).strip()
+            amount = int(match.group(2).replace(",", ""))
+            return {carrier: amount}
+
+    return {}
 
 
 @app.get("/scrape-item")
@@ -75,6 +95,7 @@ def scrape_item(
 
             meta_html = page.locator("#metaInfoTbl").evaluate("(element) => element.outerHTML")
             deli_table = extract_delivery_table_html(page)
+            delivery = parse_table_trs(deli_table) if deli_table else extract_delivery_fallback(page)
 
             detail_html = ""
             try:
@@ -83,7 +104,8 @@ def scrape_item(
                 detail_html = ""
 
             spec = parse_spec_from_html(meta_html)
-            delivery = parse_table_trs(deli_table) if deli_table else {}
+            if not delivery:
+                delivery = extract_delivery_fallback(page)
             detail = clean_html_for_detail_page(detail_html) if detail_html else ""
 
             return {
