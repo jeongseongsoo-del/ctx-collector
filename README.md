@@ -40,3 +40,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 또는 Dockerfile 기반 배포를 사용할 수 있습니다.
+
+## GIT 동기화
+git status
+git add .
+git commit -m "업데이트"
+git pull --rebase origin main
+git push origin main
