@@ -48,8 +48,8 @@ def scrape_item(
 
         try:
             page = browser.new_page(viewport={"width": 1920, "height": 1080})
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.locator("#metaInfoTbl").wait_for(state="visible", timeout=15000)
+            page.goto(url, wait_until="load", timeout=60000)
+            page.locator("#metaInfoTbl").wait_for(state="visible", timeout=30000)
 
             meta_html = page.locator("#metaInfoTbl").evaluate("(element) => element.outerHTML")
 
