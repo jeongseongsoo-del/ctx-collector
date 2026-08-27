@@ -36,6 +36,28 @@ def build_browser():
     return playwright, browser
 
 
+def extract_delivery_table_html(page) -> str:
+    if page.locator("#itemDtlTbl").count() == 0:
+        return ""
+
+    return page.evaluate(
+        """
+        () => {
+            const root = document.querySelector('#itemDtlTbl');
+            if (!root) return '';
+            const tables = [...root.querySelectorAll('table')];
+            for (const table of tables) {
+                const text = (table.textContent || '').replace(/\s+/g, ' ').trim();
+                if (/화물업체|택배|배송|운임|금액/.test(text)) {
+                    return table.outerHTML;
+                }
+            }
+            return tables[0] ? tables[0].outerHTML : '';
+        }
+        """
+    )
+
+
 @app.get("/scrape-item")
 def scrape_item(
     itemCd: str = Query(..., alias="itemCd"),
@@ -48,18 +70,11 @@ def scrape_item(
 
         try:
             page = browser.new_page(viewport={"width": 1920, "height": 1080})
-            page.goto(url, wait_until="load", timeout=60000)
-            page.locator("#metaInfoTbl").wait_for(state="visible", timeout=30000)
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.locator("#metaInfoTbl").wait_for(state="visible", timeout=15000)
 
             meta_html = page.locator("#metaInfoTbl").evaluate("(element) => element.outerHTML")
-
-            deli_table = ""
-            try:
-                deli_table = page.locator('//*[@id="itemDtlTbl"]/tbody/tr[10]/td/table').evaluate(
-                    "(element) => element.outerHTML"
-                )
-            except Exception:
-                deli_table = ""
+            deli_table = extract_delivery_table_html(page)
 
             detail_html = ""
             try:
